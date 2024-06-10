@@ -58,56 +58,42 @@ class experiment:
 
     def trial(self, n_data_conf, n_data_val, pct_paramtune, bsz):
         alpha = self.alpha
-        cal_dataset, val_dataset = split2(self.dataset, n_data_conf, n_data_val) 
-        # Calibrate the temperature via temperature scaling
-        if self.post_hoc == "TS":
-            transformation = OptimalTeamperatureScaling(1.3)
-        else:
-            raise NotImplementedError
-        
-       # Prepare the loaders
-        cal_loader = torch.utils.data.DataLoader(cal_dataset, batch_size = bsz, shuffle=False, pin_memory=True)
-        val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = bsz, shuffle=False, pin_memory=True)
-        
-        # optimzing the temperature
-        transformation =  self.get_optimal_parameters(transformation, cal_loader)            
-        cal_logits, cal_labels = postHocLogits(transformation,cal_loader,self.device,self.num_calsses )
-        val_logits, val_lables = postHocLogits(transformation,val_loader,self.device,self.num_calsses )
-        
-        if self.predictor == "SAPS":
+        cal_dataset, val_dataset = split2(self.dataset, n_data_conf, n_data_val)
+        cal_logits = [x[0]for x in cal_dataset]
+        cal_labels = [x[1]for x in cal_dataset]
 
-            ################
-            # Choose the best ranking weight
-            ################
-            pc_indices = int(cal_logits.size(0)*pct_paramtune)
-            indices = torch.randperm(cal_logits.size(0))
-            tuning_logits = cal_logits[indices[:pc_indices]]
-            tuning_labels = cal_labels[indices[:pc_indices]]
-            cal_logits = cal_logits[indices[pc_indices:]]
-            cal_labels = cal_labels[indices[pc_indices:]]
-            
-            ranking_weight_star = 0
-            best_set_size = self.num_calsses
-            for temp_ranking_weight in np.insert(np.arange(0.05,0.65,0.05), 0, 0.02): 
-                predictor = SplitPredictor(SAPS(temp_ranking_weight))
-                predictor.calculate_threshold(tuning_logits,tuning_labels, alpha)       
-                prediction_sets = predictor.predict_with_logits(tuning_logits)
-                average_size = metrics('average_size')(prediction_sets, tuning_labels)
-                if average_size < best_set_size:
-                    ranking_weight_star = temp_ranking_weight
-                    best_set_size = average_size
-            predictor = SplitPredictor(SAPS(ranking_weight_star))
-        elif self.predictor == "APS":
-            predictor = SplitPredictor(APS())
-        else:
-            raise NotImplementedError
-            
-            
-        predictor.calculate_threshold(cal_logits,cal_labels, alpha)
-        prediction_sets = predictor.predict_with_logits(val_logits)
-        coverage_rate = metrics('coverage_rate')(prediction_sets, val_lables)
-        average_size = metrics('average_size')(prediction_sets, val_lables)
-        prec1, prec5 = accuracy(val_logits, val_lables, topk=(1, 5))
+        val_logits = [x[0] for x in val_dataset]
+        val_labels = [x[1] for x in val_dataset]
+
+
+        score_function = APS()
+        prediction_sets = []
+        for i in range(val_logits.shape[0]):
+            this_logit = val_logits[i]
+            prediction_set = []
+            for test_label in range(val_logits.shape[1]):
+                transformation = OptimalTeamperatureScaling(1.3)
+                this_cal_logits = torch.concatenate(cal_logits, torch.Tensor(this_logit))
+                this_cal_labels = torch.concatenate(val_labels, torch.Tensor(test_label))
+                this_cal_dataset = torch.utils.data.TensorDataset(this_cal_logits, this_cal_labels.long())
+                this_cal_loader = torch.utils.data.DataLoader(this_cal_dataset, batch_size=bsz, shuffle=False, pin_memory=True)
+                transformation = self.get_optimal_parameters(transformation, this_cal_loader)
+                this_cal_logits, this_cal_labels = postHocLogits(transformation, this_cal_loader, self.device, self.num_calsses)
+                nonconformity_scores = score_function(this_cal_logits, this_cal_labels)
+                test_example_score = nonconformity_scores[-1]
+                cal_scores = nonconformity_scores[:-1]
+                p_value = torch.sum(test_example_score <= nonconformity_scores) / nonconformity_scores.shape[0]
+                # accept the null-hypothesis
+                if p_value > alpha:
+                    prediction_set.append(test_label)
+
+            prediction_sets.append(prediction_set)
+
+
+
+        coverage_rate = metrics('coverage_rate')(prediction_sets, val_labels)
+        average_size = metrics('average_size')(prediction_sets, val_labels)
+        prec1, prec5 = accuracy(val_logits, val_labels, topk=(1, 5))
 
         return prec1,prec5,coverage_rate,average_size
     
@@ -176,7 +162,7 @@ if __name__ == "__main__":
     
     if dataset_name==  "imagenet":
         n_data_conf = 30000
-        n_data_val = 20000
+        n_data_val = 10
     else:
         raise NotImplementedError
     

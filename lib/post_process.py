@@ -25,6 +25,18 @@ def postHocLogits(transforamtion,logits_loader,device,num_classes,mask=None):
             i = i + batch_logits.shape[0]
     return logits, labels.long()
 
+
+def get_logits_and_labels(dataloader,num_classes):
+    logits = torch.zeros((len(dataloader.dataset), num_classes))  # 1000 classes in Imagenet.
+    labels = torch.zeros((len(dataloader.dataset),))
+    i = 0
+    with torch.no_grad():
+        for batch_logits, targets in dataloader:
+            logits[i:(i + batch_logits.shape[0]), :] = batch_logits
+            labels[i:(i + batch_logits.shape[0])] = targets.cpu()
+            i = i + batch_logits.shape[0]
+    return logits, labels.long()
+
 class PostHoc(nn.Module):
     def forward(self,batch_logits):
         return batch_logits
